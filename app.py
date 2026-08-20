@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS drivers (id TEXT PRIMARY KEY, name TEXT NOT NULL, pho
 CREATE TABLE IF NOT EXISTS stops (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS queue_entries (id TEXT PRIMARY KEY, stop_id TEXT NOT NULL, driver_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', joined_at TEXT NOT NULL, left_at TEXT, UNIQUE(stop_id, driver_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS rides (id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL, origin TEXT NOT NULL, destination TEXT NOT NULL, origin_lat REAL, origin_lng REAL, destination_lat REAL, destination_lng REAL, driver_id TEXT, status TEXT NOT NULL DEFAULT 'requested', eta_minutes INTEGER, estimated_price REAL, created_at TEXT NOT NULL, accepted_at TEXT, FOREIGN KEY(driver_id) REFERENCES drivers(id));
+CREATE TABLE IF NOT EXISTS locations (entity_id TEXT NOT NULL, role TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, ride_id TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(entity_id, role));
 '''
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -54,6 +55,11 @@ class RideRequest(BaseModel):
     customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
     origin_lat: Optional[float]=None; origin_lng: Optional[float]=None; destination_lat: Optional[float]=None; destination_lng: Optional[float]=None
 class RideAccept(BaseModel): driver_id: str
+class LocationUpdate(BaseModel):
+    entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None
+class WhatsAppRide(BaseModel):
+    customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
+    confirmed: bool = False
 
 @app.on_event('startup')
 def startup(): init_db()
@@ -124,6 +130,36 @@ def get_ride(ride_id: str):
     con=db(); ride=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
     if not ride: raise HTTPException(404,'Servicio no encontrado')
     return row_dict(ride)
+
+@app.post('/api/locations')
+def update_location(data: LocationUpdate):
+    if data.role not in ('customer', 'driver', 'admin'):
+        raise HTTPException(400, 'Perfil de ubicación no válido')
+    con=db(); con.execute('''INSERT INTO locations(entity_id,role,lat,lng,ride_id,updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(entity_id,role) DO UPDATE SET lat=excluded.lat,lng=excluded.lng,ride_id=excluded.ride_id,updated_at=excluded.updated_at''',
+        (data.entity_id, data.role, data.lat, data.lng, data.ride_id, now())); con.commit(); con.close()
+    return {'ok': True, 'sharing': True, 'updated_at': now()}
+
+@app.get('/api/locations')
+def list_locations(ride_id: Optional[str]=None):
+    con=db();
+    if ride_id:
+        rows=con.execute('SELECT * FROM locations WHERE ride_id=? ORDER BY updated_at DESC',(ride_id,)).fetchall()
+    else:
+        rows=con.execute('SELECT * FROM locations ORDER BY updated_at DESC').fetchall()
+    con.close(); return [row_dict(r) for r in rows]
+
+@app.post('/api/whatsapp/request')
+def whatsapp_request(data: WhatsAppRide):
+    """Puente preparado para WhatsApp Business: la IA confirma y luego crea el mismo servicio que la app."""
+    eta, price = estimate({'origin_lat': None, 'origin_lng': None, 'destination_lat': None, 'destination_lng': None})
+    if not data.confirmed:
+        return {'status':'awaiting_confirmation','origin':data.origin,'destination':data.destination,
+                'eta_minutes':eta,'estimated_price':price,
+                'message':f'Confirma Taxi Ya: recogida en {data.origin}, destino {data.destination}. ¿Confirmas?'}
+    ride=request_ride(RideRequest(customer_name=data.customer_name, customer_phone=data.customer_phone,
+        origin=data.origin, destination=data.destination))
+    return {'status':'created','channel':'whatsapp','ride':ride}
 
 @app.get('/api/admin/summary')
 def admin_summary():

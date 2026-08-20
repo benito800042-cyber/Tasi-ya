@@ -1,8 +1,32 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b6b68"><title>Taxi Ya · App</title><link rel="stylesheet" href="/style.css"></head><body>
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b6b68">
+  <title>Taxi Ya · App</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQ3pmWf4C6LYgMZcXw4Z8Qp6Z7Y0j9c=" crossorigin="">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
 <header><div><b>Taxi Ya</b><span>Alcantarilla · Murcia</span></div><small>APP MVP</small></header>
-<main><section class="intro"><p>PLATAFORMA DE PRUEBA</p><h1>Tu taxi, más cerca.</h1><div id="notice" class="notice">Conectando con el servidor…</div></section>
-<nav><button class="tab active" data-view="customer">Cliente</button><button class="tab" data-view="driver">Taxista</button><button class="tab" data-view="admin">Administrador</button></nav>
-<section id="customer" class="view active"><div class="card"><h2>Solicitar taxi</h2><p>Rellena el trayecto y recibe una estimación.</p><label>Nombre<input id="customerName" value="José"></label><label>Teléfono<input id="customerPhone" value="600000002"></label><label>Origen<input id="origin" value="Calle Mayor, Alcantarilla"></label><label>Destino<input id="destination" value="Hospital de Alcantarilla"></label><button class="primary" id="request">Solicitar taxi</button><div id="rideResult" class="result hidden"></div></div></section>
-<section id="driver" class="view"><div class="grid"><div class="card"><h2>Registro de taxista</h2><label>Nombre<input id="driverName" value="Juan García"></label><label>Teléfono<input id="driverPhone" value="600000001"></label><label>Licencia<input id="license" value="LIC-001"></label><label>Matrícula<input id="plate" value="1234 ABC"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div></div><div class="card"><h2>Activación y parada</h2><p>Introduce el ID recibido y la clave inicial.</p><label>ID del registro<input id="driverId" placeholder="Se rellena al registrarte"></label><label>Clave<input id="code" inputmode="numeric" value="123456"></label><label>ID de parada<input id="stopId" placeholder="Se rellena al crear una parada"></label><button class="primary" id="activate">Activar cuenta</button><button class="secondary" id="join">Entrar en cola</button><div id="queueResult" class="result hidden"></div></div></div></section>
-<section id="admin" class="view"><div class="grid"><div class="card"><h2>Crear parada</h2><label>Nombre<input id="stopName" value="Parada Centro"></label><label>Dirección<input id="stopAddress" value="Centro, Alcantarilla"></label><button class="primary" id="createStop">Crear parada</button><div id="stopResult" class="result hidden"></div></div><div class="card"><h2>Resumen</h2><button class="secondary" id="refresh">Actualizar datos</button><div id="summary" class="summary"></div></div></div></section>
-</main><script src="/app.js"></script></body></html>
+<main>
+  <section class="intro"><p>PLATAFORMA DE PRUEBA</p><h1>Tu taxi, más cerca.</h1><div id="notice" class="notice">Conectando con el servidor…</div></section>
+  <nav><button class="tab active" data-view="customer">Cliente</button><button class="tab" data-view="driver">Taxista</button><button class="tab" data-view="admin">Administrador</button></nav>
+  <section id="customer" class="view active">
+    <div class="card"><h2>Solicitar taxi</h2><p>Rellena el trayecto y recibe una estimación.</p>
+      <div id="customerMap" class="map" aria-label="Mapa del cliente"></div>
+      <div class="map-actions"><button class="secondary" id="customerGps">Usar mi ubicación GPS</button><span id="customerGpsStatus">GPS sin activar</span></div>
+      <label>Nombre<input id="customerName" value="José"></label><label>Teléfono<input id="customerPhone" value="600000002"></label><label>Origen<input id="origin" value="Calle Mayor, Alcantarilla"></label><label>Destino<input id="destination" value="Hospital de Alcantarilla"></label>
+      <button class="primary" id="request">Solicitar taxi</button><div id="rideResult" class="result hidden"></div>
+    </div>
+  </section>
+  <section id="driver" class="view"><div class="grid">
+    <div class="card"><h2>Registro de taxista</h2><label>Nombre<input id="driverName" value="Juan García"></label><label>Teléfono<input id="driverPhone" value="600000001"></label><label>Licencia<input id="license" value="LIC-001"></label><label>Matrícula<input id="plate" value="1234 ABC"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div></div>
+    <div class="card"><h2>Activación y parada</h2><p>Introduce el ID recibido y la clave inicial.</p><div id="driverMap" class="map" aria-label="Mapa del taxista"></div><div class="map-actions"><button class="secondary" id="driverGps">Compartir ubicación</button><span id="driverGpsStatus">GPS sin activar</span></div><label>ID del registro<input id="driverId" placeholder="Se rellena al registrarte"></label><label>Clave<input id="code" inputmode="numeric" value="123456"></label><label>ID de parada<input id="stopId" placeholder="Se rellena al crear una parada"></label><button class="primary" id="activate">Activar cuenta</button><button class="secondary" id="join">Entrar en cola</button><div id="queueResult" class="result hidden"></div></div>
+  </div></section>
+  <section id="admin" class="view"><div class="grid"><div class="card"><h2>Crear parada</h2><label>Nombre<input id="stopName" value="Parada Centro"></label><label>Dirección<input id="stopAddress" value="Centro, Alcantarilla"></label><button class="primary" id="createStop">Crear parada</button><div id="stopResult" class="result hidden"></div></div><div class="card"><h2>Resumen</h2><button class="secondary" id="refresh">Actualizar datos</button><div id="summary" class="summary"></div></div></div></section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/app.js"></script>
+</body></html>
