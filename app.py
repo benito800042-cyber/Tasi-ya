@@ -130,4 +130,4 @@ def admin_summary():
     con=db(); result={'stops':con.execute('SELECT COUNT(*) FROM stops WHERE active=1').fetchone()[0],'active_drivers':con.execute('SELECT COUNT(*) FROM drivers WHERE status="active"').fetchone()[0],'today_rides':con.execute('SELECT COUNT(*) FROM rides WHERE date(created_at)=date("now")').fetchone()[0]}; con.close(); return result
 
 # The same service serves the mobile-friendly web app when deployed.
-app.mount('/', StaticFiles(directory=Path(__file__).with_name('static'), html=True), name='static')
+app.mount('/', StaticFiles(directory=Path(__file__).parent, html=True), name='static')
