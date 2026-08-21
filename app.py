@@ -269,8 +269,10 @@ def update_ride_status(ride_id: str, data: RideStatus):
         con.close(); raise HTTPException(409,'Estado de servicio no válido')
     con.execute('UPDATE rides SET status=? WHERE id=?',(data.status,ride_id))
     if data.status=='completed' and ride['driver_id']:
-        con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(ride['driver_id'],))
-    con.commit(); updated=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+        # Al terminar, el taxista queda libre inmediatamente y podrá volver a la cola
+        # en cuanto su siguiente actualización GPS confirme que está en una parada.
+        con.execute('UPDATE drivers SET available=1,busy=0 WHERE id=?',(ride['driver_id'],))
+    con.commit(); updated=con.execute('SELECT r.*,d.name as driver_name,d.plate,d.available as driver_available,d.busy as driver_busy FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
     return row_dict(updated)
 
 @app.get('/api/rides/driver/{driver_id}')
