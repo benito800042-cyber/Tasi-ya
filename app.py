@@ -14,10 +14,10 @@ app = FastAPI(title='Taxi Ya API', version='0.1.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
 SCHEMA = '''
-CREATE TABLE IF NOT EXISTS drivers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE, license TEXT, plate TEXT, status TEXT NOT NULL DEFAULT 'pending', device_id TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS drivers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE, license TEXT, plate TEXT, status TEXT NOT NULL DEFAULT 'pending', device_id TEXT, created_at TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 0, busy INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS stops (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT, latitude REAL, longitude REAL, radius_m REAL NOT NULL DEFAULT 50, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS queue_entries (id TEXT PRIMARY KEY, stop_id TEXT NOT NULL, driver_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', joined_at TEXT NOT NULL, left_at TEXT, UNIQUE(stop_id, driver_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
-CREATE TABLE IF NOT EXISTS stop_presence (driver_id TEXT NOT NULL, stop_id TEXT NOT NULL, entered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, inside INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(driver_id, stop_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
+CREATE TABLE IF NOT EXISTS stop_presence (driver_id TEXT NOT NULL, stop_id TEXT NOT NULL, entered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, inside INTEGER NOT NULL DEFAULT 1, outside_since TEXT, PRIMARY KEY(driver_id, stop_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS rides (id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL, origin TEXT NOT NULL, destination TEXT NOT NULL, origin_lat REAL, origin_lng REAL, destination_lat REAL, destination_lng REAL, driver_id TEXT, status TEXT NOT NULL DEFAULT 'requested', eta_minutes INTEGER, estimated_price REAL, created_at TEXT NOT NULL, accepted_at TEXT, FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS locations (entity_id TEXT NOT NULL, role TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, ride_id TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(entity_id, role));
 '''
@@ -27,9 +27,14 @@ def db():
     con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row; con.execute('PRAGMA foreign_keys=ON'); return con
 def init_db():
     con=db(); con.executescript(SCHEMA)
-    cols={r['name'] for r in con.execute('PRAGMA table_info(stops)').fetchall()}
+    stop_cols={r['name'] for r in con.execute('PRAGMA table_info(stops)').fetchall()}
     for name,definition in [('latitude','REAL'),('longitude','REAL'),('radius_m','REAL NOT NULL DEFAULT 50')]:
-        if name not in cols: con.execute(f'ALTER TABLE stops ADD COLUMN {name} {definition}')
+        if name not in stop_cols: con.execute(f'ALTER TABLE stops ADD COLUMN {name} {definition}')
+    driver_cols={r['name'] for r in con.execute('PRAGMA table_info(drivers)').fetchall()}
+    for name,definition in [('available','INTEGER NOT NULL DEFAULT 0'),('busy','INTEGER NOT NULL DEFAULT 0')]:
+        if name not in driver_cols: con.execute(f'ALTER TABLE drivers ADD COLUMN {name} {definition}')
+    presence_cols={r['name'] for r in con.execute('PRAGMA table_info(stop_presence)').fetchall()}
+    if 'outside_since' not in presence_cols: con.execute('ALTER TABLE stop_presence ADD COLUMN outside_since TEXT')
     con.execute('UPDATE stops SET radius_m=50 WHERE radius_m IS NULL')
     con.commit(); con.close()
 
@@ -64,7 +69,9 @@ class RideRequest(BaseModel):
     origin_lat: Optional[float]=None; origin_lng: Optional[float]=None; destination_lat: Optional[float]=None; destination_lng: Optional[float]=None
 class RideAccept(BaseModel): driver_id: str
 class LocationUpdate(BaseModel):
-    entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None
+    entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None; available: Optional[bool]=None
+class DriverAvailability(BaseModel):
+    available: bool
 class WhatsAppRide(BaseModel):
     customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
     confirmed: bool = False
@@ -79,7 +86,7 @@ def health(): return {'ok': True, 'service':'taxi-ya-api'}
 def register_driver(data: DriverRegister):
     con=db(); driver_id=str(uuid.uuid4())
     try:
-        con.execute('INSERT INTO drivers VALUES (?,?,?,?,?,?,?,?)',(driver_id,data.name,data.phone,data.license,data.plate,'pending',None,now())); con.commit()
+        con.execute('INSERT INTO drivers VALUES (?,?,?,?,?,?,?,?,?,?)',(driver_id,data.name,data.phone,data.license,data.plate,'pending',None,now(),0,0)); con.commit()
     except sqlite3.IntegrityError: raise HTTPException(409,'El teléfono ya está registrado')
     finally: con.close()
     return {'driver_id':driver_id,'status':'pending','message':'Registro creado. Falta activación.'}
@@ -87,7 +94,7 @@ def register_driver(data: DriverRegister):
 @app.post('/api/drivers/activate')
 def activate_driver(data: DriverActivate):
     if code_hash(data.code) != code_hash(ACTIVATION_CODE): raise HTTPException(403,'Código de activación incorrecto')
-    con=db(); cur=con.execute('UPDATE drivers SET status="active", device_id=? WHERE id=? AND status IN ("pending","active")',(data.device_id,data.driver_id)); con.commit(); con.close()
+    con=db(); cur=con.execute('UPDATE drivers SET status="active", device_id=?, available=0, busy=0 WHERE id=? AND status IN ("pending","active")',(data.device_id,data.driver_id)); con.commit(); con.close()
     if cur.rowcount != 1: raise HTTPException(404,'Taxista no encontrado')
     return {'driver_id':data.driver_id,'status':'active','device_bound':True}
 
@@ -108,25 +115,66 @@ def delete_stop(stop_id: str):
     if cur.rowcount != 1: raise HTTPException(404,'Parada no encontrada')
     return {'ok':True}
 
+def queue_rows(con, stop_id=None):
+    sql='''SELECT q.id,q.stop_id,q.driver_id,q.joined_at,d.name,d.plate FROM queue_entries q JOIN drivers d ON d.id=q.driver_id WHERE q.status="waiting"'''
+    params=[]
+    if stop_id: sql+=' AND q.stop_id=?'; params.append(stop_id)
+    return con.execute(sql+' ORDER BY q.joined_at,q.id',params).fetchall()
+
+def queue_position(con, entry_id):
+    row=con.execute('SELECT joined_at,id FROM queue_entries WHERE id=?',(entry_id,)).fetchone()
+    if not row: return None
+    return con.execute('SELECT COUNT(*) FROM queue_entries WHERE status="waiting" AND (joined_at<? OR (joined_at=? AND id<=?))',(row['joined_at'],row['joined_at'],row['id'])).fetchone()[0]
+
+def queue_entry_for_driver(con, driver_id):
+    return con.execute('SELECT * FROM queue_entries WHERE driver_id=? AND status="waiting" ORDER BY joined_at,id LIMIT 1',(driver_id,)).fetchone()
+
+def activate_queue_entry(con, stop_id, driver_id, joined_at):
+    old=con.execute('SELECT * FROM queue_entries WHERE stop_id=? AND driver_id=? ORDER BY joined_at DESC LIMIT 1',(stop_id,driver_id)).fetchone()
+    if old:
+        con.execute('UPDATE queue_entries SET status="waiting",joined_at=?,left_at=NULL WHERE id=?',(joined_at,old['id']))
+        return con.execute('SELECT * FROM queue_entries WHERE id=?',(old['id'],)).fetchone()
+    qid=str(uuid.uuid4()); con.execute('INSERT INTO queue_entries VALUES (?,?,?,?,?,?)',(qid,stop_id,driver_id,'waiting',joined_at,None))
+    return con.execute('SELECT * FROM queue_entries WHERE id=?',(qid,)).fetchone()
+
+@app.post('/api/drivers/{driver_id}/availability')
+def set_driver_availability(driver_id: str, data: DriverAvailability):
+    con=db(); driver=con.execute('SELECT * FROM drivers WHERE id=? AND status="active"',(driver_id,)).fetchone()
+    if not driver: con.close(); raise HTTPException(404,'Taxista no encontrado')
+    busy=0 if data.available else 1
+    con.execute('UPDATE drivers SET available=?,busy=? WHERE id=?',(1 if data.available else 0,busy,driver_id))
+    removed=[]
+    if not data.available:
+        rows=con.execute('SELECT stop_id FROM queue_entries WHERE driver_id=? AND status="waiting"',(driver_id,)).fetchall()
+        removed=[r['stop_id'] for r in rows]
+        con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),driver_id))
+    con.commit(); con.close()
+    return {'ok':True,'driver_id':driver_id,'available':data.available,'busy':not data.available,'removed_stop_ids':removed}
+
 @app.post('/api/queue/join')
 def join_queue(data: QueueJoin):
     con=db(); driver=con.execute('SELECT * FROM drivers WHERE id=? AND status="active"',(data.driver_id,)).fetchone(); stop=con.execute('SELECT * FROM stops WHERE id=? AND active=1',(data.stop_id,)).fetchone()
     if not driver: con.close(); raise HTTPException(403,'El taxista no está activo')
     if not stop: con.close(); raise HTTPException(404,'Parada no encontrada')
-    existing=con.execute('SELECT * FROM queue_entries WHERE driver_id=? AND status="waiting"',(data.driver_id,)).fetchone()
-    if existing: con.close(); raise HTTPException(409,'El taxi ya está en una cola')
-    qid=str(uuid.uuid4()); con.execute('INSERT INTO queue_entries VALUES (?,?,?,?,?,?)',(qid,data.stop_id,data.driver_id,'waiting',now(),None)); con.commit()
-    pos=con.execute('SELECT COUNT(*) FROM queue_entries WHERE stop_id=? AND status="waiting" AND joined_at <= (SELECT joined_at FROM queue_entries WHERE id=?)',(data.stop_id,qid)).fetchone()[0]; con.close()
-    return {'queue_entry_id':qid,'position':pos,'stop_id':data.stop_id}
+    if not driver['available'] or driver['busy']: con.close(); raise HTTPException(409,'El taxi debe estar libre para entrar en la cola')
+    existing=queue_entry_for_driver(con,data.driver_id)
+    if existing: con.close(); raise HTTPException(409,'El taxi ya está en la cola unificada')
+    entry=activate_queue_entry(con,data.stop_id,data.driver_id,now()); con.commit(); pos=queue_position(con,entry['id']); con.close()
+    return {'queue_entry_id':entry['id'],'position':pos,'stop_id':data.stop_id,'unified':True}
 
 @app.post('/api/queue/leave')
 def leave_queue(data: QueueJoin):
-    con=db(); cur=con.execute('UPDATE queue_entries SET status="left", left_at=? WHERE stop_id=? AND driver_id=? AND status="waiting"',(now(),data.stop_id,data.driver_id)); con.commit(); con.close();
-    if cur.rowcount != 1: raise HTTPException(404,'El taxi no está en esa cola')
+    con=db(); cur=con.execute('UPDATE queue_entries SET status="left", left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close();
+    if cur.rowcount != 1: raise HTTPException(404,'El taxi no está en la cola')
     return {'ok':True}
+@app.get('/api/queue')
+def get_unified_queue():
+    con=db(); rows=queue_rows(con); result=[{'position':i+1,**row_dict(r)} for i,r in enumerate(rows)]; con.close(); return result
 @app.get('/api/queue/{stop_id}')
 def get_queue(stop_id: str):
-    con=db(); rows=con.execute('''SELECT q.id,q.stop_id,q.driver_id,q.joined_at,d.name,d.plate FROM queue_entries q JOIN drivers d ON d.id=q.driver_id WHERE q.stop_id=? AND q.status="waiting" ORDER BY q.joined_at,q.id''',(stop_id,)).fetchall(); con.close(); return [{'position':i+1,**row_dict(r)} for i,r in enumerate(rows)]
+    con=db(); rows=queue_rows(con,stop_id); result=[]
+    for r in rows: result.append({'position':queue_position(con,r['id']),**row_dict(r)})
+    con.close(); return result
 
 @app.post('/api/rides/request')
 def request_ride(data: RideRequest):
@@ -140,8 +188,9 @@ def accept_ride(ride_id: str, data: RideAccept):
     if not driver: con.close(); raise HTTPException(403,'El taxista no está activo')
     if not ride: con.close(); raise HTTPException(404,'Servicio no encontrado')
     if ride['status']!='requested': con.close(); raise HTTPException(409,'El servicio ya no está disponible')
-    eta,price=estimate(dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id)); con.commit(); con.close()
-    return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'whatsapp':'pending_configuration'}
+    if not driver['available'] or driver['busy']: con.close(); raise HTTPException(409,'El taxi no está libre')
+    eta,price=estimate(dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
+    return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
 
 @app.get('/api/rides/{ride_id}')
 def get_ride(ride_id: str):
@@ -150,49 +199,60 @@ def get_ride(ride_id: str):
     return row_dict(ride)
 
 def process_driver_presence(con, driver_id, lat, lng):
-    """Actualiza la geocerca y mete/saca al taxista de la cola tras 30 segundos dentro."""
+    """Geocerca automática: 30 s dentro añade a la cola unificada y 30 s fuera lo elimina."""
     current=now(); auto_queue=None; exited=[]
+    driver=con.execute('SELECT available,busy FROM drivers WHERE id=?',(driver_id,)).fetchone()
+    can_queue=bool(driver and driver['available'] and not driver['busy'])
     stops=con.execute('SELECT * FROM stops WHERE active=1 AND latitude IS NOT NULL AND longitude IS NOT NULL').fetchall()
     for stop in stops:
-        distance_m=(haversine(lat,lng,stop['latitude'],stop['longitude']) or 999)*1000
+        distance_km=haversine(lat,lng,stop['latitude'],stop['longitude']); distance_m=(999 if distance_km is None else distance_km*1000)
         inside=distance_m <= (stop['radius_m'] or 50)
         presence=con.execute('SELECT * FROM stop_presence WHERE driver_id=? AND stop_id=?',(driver_id,stop['id'])).fetchone()
         if inside:
             entered=presence['entered_at'] if presence and presence['inside'] else current
-            con.execute('INSERT INTO stop_presence(driver_id,stop_id,entered_at,last_seen_at,inside) VALUES (?,?,?,?,1) ON CONFLICT(driver_id,stop_id) DO UPDATE SET entered_at=excluded.entered_at,last_seen_at=excluded.last_seen_at,inside=1',(driver_id,stop['id'],entered,current))
+            con.execute('''INSERT INTO stop_presence(driver_id,stop_id,entered_at,last_seen_at,inside,outside_since) VALUES (?,?,?,?,1,NULL)
+                ON CONFLICT(driver_id,stop_id) DO UPDATE SET entered_at=excluded.entered_at,last_seen_at=excluded.last_seen_at,inside=1,outside_since=NULL''',(driver_id,stop['id'],entered,current))
             elapsed=(datetime.fromisoformat(current)-datetime.fromisoformat(entered)).total_seconds()
-            if elapsed >= 30:
-                existing=con.execute('SELECT * FROM queue_entries WHERE driver_id=? AND status="waiting"',(driver_id,)).fetchone()
-                same=con.execute('SELECT * FROM queue_entries WHERE driver_id=? AND stop_id=? AND status="waiting"',(driver_id,stop['id'])).fetchone()
-                if not existing and not same:
-                    qid=str(uuid.uuid4()); con.execute('INSERT INTO queue_entries VALUES (?,?,?,?,?,?)',(qid,stop['id'],driver_id,'waiting',current,None)); same=con.execute('SELECT * FROM queue_entries WHERE id=?',(qid,)).fetchone()
-                if same:
-                    position=con.execute('SELECT COUNT(*) FROM queue_entries WHERE stop_id=? AND status="waiting" AND joined_at <= ?',(stop['id'],same['joined_at'])).fetchone()[0]
-                    auto_queue={'queue_entry_id':same['id'],'stop_id':stop['id'],'stop_name':stop['name'],'position':position,'distance_m':round(distance_m)}
+            if can_queue and elapsed >= 30 and not queue_entry_for_driver(con,driver_id):
+                entry=activate_queue_entry(con,stop['id'],driver_id,entered)
+                auto_queue={'queue_entry_id':entry['id'],'stop_id':stop['id'],'stop_name':stop['name'],'position':queue_position(con,entry['id']),'distance_m':round(distance_m)}
+            elif can_queue and elapsed >= 30:
+                existing=queue_entry_for_driver(con,driver_id)
+                if existing:
+                    auto_queue={'queue_entry_id':existing['id'],'stop_id':existing['stop_id'],'stop_name':stop['name'] if existing['stop_id']==stop['id'] else 'Cola unificada','position':queue_position(con,existing['id']),'distance_m':round(distance_m)}
         elif presence and presence['inside']:
-            con.execute('UPDATE stop_presence SET inside=0,last_seen_at=? WHERE driver_id=? AND stop_id=?',(current,driver_id,stop['id']))
-            cur=con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND stop_id=? AND status="waiting" AND joined_at>=?', (current,driver_id,stop['id'],presence['entered_at']))
-            if cur.rowcount: exited.append(stop['id'])
+            if not presence['outside_since']:
+                con.execute('UPDATE stop_presence SET outside_since=?,last_seen_at=? WHERE driver_id=? AND stop_id=?',(current,current,driver_id,stop['id']))
+            else:
+                outside_elapsed=(datetime.fromisoformat(current)-datetime.fromisoformat(presence['outside_since'])).total_seconds()
+                if outside_elapsed >= 30:
+                    con.execute('UPDATE stop_presence SET inside=0,last_seen_at=?,outside_since=NULL WHERE driver_id=? AND stop_id=?',(current,driver_id,stop['id']))
+                    cur=con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND stop_id=? AND status="waiting"',(current,driver_id,stop['id']))
+                    if cur.rowcount: exited.append(stop['id'])
     return auto_queue,exited
 
 @app.post('/api/locations')
 def update_location(data: LocationUpdate):
     if data.role not in ('customer', 'driver', 'admin'):
         raise HTTPException(400, 'Perfil de ubicación no válido')
-    con=db(); con.execute('''INSERT INTO locations(entity_id,role,lat,lng,ride_id,updated_at) VALUES (?,?,?,?,?,?)
+    con=db(); current=now()
+    if data.role=='driver' and data.available is not None:
+        con.execute('UPDATE drivers SET available=?,busy=? WHERE id=? AND status="active"',(1 if data.available else 0,0 if data.available else 1,data.entity_id))
+        if not data.available: con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(current,data.entity_id))
+    con.execute('''INSERT INTO locations(entity_id,role,lat,lng,ride_id,updated_at) VALUES (?,?,?,?,?,?)
         ON CONFLICT(entity_id,role) DO UPDATE SET lat=excluded.lat,lng=excluded.lng,ride_id=excluded.ride_id,updated_at=excluded.updated_at''',
-        (data.entity_id, data.role, data.lat, data.lng, data.ride_id, now()))
+        (data.entity_id, data.role, data.lat, data.lng, data.ride_id, current))
     auto_queue,exited=process_driver_presence(con,data.entity_id,data.lat,data.lng) if data.role=='driver' else (None,[])
+    current_entry=queue_entry_for_driver(con,data.entity_id) if data.role=='driver' else None
+    queue_state={'queue_entry_id':current_entry['id'],'stop_id':current_entry['stop_id'],'position':queue_position(con,current_entry['id'])} if current_entry else None
     con.commit(); con.close()
-    return {'ok': True, 'sharing': True, 'updated_at': now(), 'auto_queue':auto_queue, 'exited_stop_ids':exited}
+    return {'ok': True, 'sharing': True, 'updated_at': current, 'auto_queue':auto_queue, 'queue':queue_state, 'exited_stop_ids':exited}
 
 @app.get('/api/locations')
 def list_locations(ride_id: Optional[str]=None):
-    con=db();
-    if ride_id:
-        rows=con.execute('SELECT * FROM locations WHERE ride_id=? ORDER BY updated_at DESC',(ride_id,)).fetchall()
-    else:
-        rows=con.execute('SELECT * FROM locations ORDER BY updated_at DESC').fetchall()
+    con=db(); base='''SELECT l.*,d.available,d.busy FROM locations l LEFT JOIN drivers d ON d.id=l.entity_id AND l.role="driver"'''
+    if ride_id: rows=con.execute(base+' WHERE l.ride_id=? ORDER BY l.updated_at DESC',(ride_id,)).fetchall()
+    else: rows=con.execute(base+' ORDER BY l.updated_at DESC').fetchall()
     con.close(); return [row_dict(r) for r in rows]
 
 @app.post('/api/whatsapp/request')
