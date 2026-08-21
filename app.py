@@ -68,6 +68,7 @@ class RideRequest(BaseModel):
     customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
     origin_lat: Optional[float]=None; origin_lng: Optional[float]=None; destination_lat: Optional[float]=None; destination_lng: Optional[float]=None
 class RideAccept(BaseModel): driver_id: str
+class RideStatus(BaseModel): status: str
 class LocationUpdate(BaseModel):
     entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None; available: Optional[bool]=None
 class DriverAvailability(BaseModel):
@@ -191,6 +192,27 @@ def accept_ride(ride_id: str, data: RideAccept):
     if not driver['available'] or driver['busy']: con.close(); raise HTTPException(409,'El taxi no está libre')
     eta,price=estimate(dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
     return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
+
+@app.get('/api/rides/open')
+def open_rides():
+    con=db(); rows=con.execute('SELECT * FROM rides WHERE status="requested" ORDER BY created_at,id').fetchall(); con.close(); return [row_dict(r) for r in rows]
+
+@app.post('/api/rides/{ride_id}/status')
+def update_ride_status(ride_id: str, data: RideStatus):
+    transitions={'accepted':'to_pickup','to_pickup':'picked_up','picked_up':'completed'}
+    con=db(); ride=con.execute('SELECT * FROM rides WHERE id=?',(ride_id,)).fetchone()
+    if not ride: con.close(); raise HTTPException(404,'Servicio no encontrado')
+    if data.status not in ('to_pickup','picked_up','completed') or transitions.get(ride['status'])!=data.status:
+        con.close(); raise HTTPException(409,'Estado de servicio no válido')
+    con.execute('UPDATE rides SET status=? WHERE id=?',(data.status,ride_id))
+    if data.status=='completed' and ride['driver_id']:
+        con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(ride['driver_id'],))
+    con.commit(); updated=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+    return row_dict(updated)
+
+@app.get('/api/rides/driver/{driver_id}')
+def driver_rides(driver_id: str):
+    con=db(); rows=con.execute('SELECT * FROM rides WHERE driver_id=? AND status!="completed" ORDER BY created_at DESC',(driver_id,)).fetchall(); con.close(); return [row_dict(r) for r in rows]
 
 @app.get('/api/rides/{ride_id}')
 def get_ride(ride_id: str):
