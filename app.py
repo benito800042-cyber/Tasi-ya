@@ -47,14 +47,32 @@ def haversine(a_lat,a_lng,b_lat,b_lng):
     x=math.sin(dlat/2)**2+math.cos(a_lat*p)*math.cos(b_lat*p)*math.sin(dlng/2)**2
     return r*2*math.asin(math.sqrt(x))
 
-CENTRAL_FARE_NAME='Entrevías'; CENTRAL_FARE_LAT=37.969; CENTRAL_FARE_LNG=-1.217; SERVICE_ZONE_KM=6.0
+CENTRAL_FARE_NAME='Entrevías'; CENTRAL_FARE_LAT=37.969; CENTRAL_FARE_LNG=-1.217; SERVICE_ZONE_KM=5.0
+ROUTE_CACHE={}
+def road_distance_km(points):
+    clean=[(round(float(lat),6),round(float(lng),6)) for lat,lng in points if lat is not None and lng is not None]
+    if len(clean)<2: return None
+    key=';'.join(f'{lng},{lat}' for lat,lng in clean)
+    if key in ROUTE_CACHE: return ROUTE_CACHE[key]
+    try:
+        async_url='https://router.project-osrm.org/route/v1/driving/'+key
+        with httpx.Client(timeout=6,headers={'User-Agent':'TaxiYa-MVP/1.0'}) as client:
+            response=client.get(async_url,params={'overview':'false','alternatives':'false'})
+            response.raise_for_status(); km=response.json()['routes'][0]['distance']/1000
+        ROUTE_CACHE[key]=km; return km
+    except Exception:
+        return None
 
-def estimate(ride):
-    km=haversine(ride.get('origin_lat'),ride.get('origin_lng'),ride.get('destination_lat'),ride.get('destination_lng'))
-    km = km if km is not None else 4.0
+def estimate_km(km):
+    km=km if km is not None else 4.0
     eta=max(3, math.ceil(km/0.45))
     price=4.20 + km*1.05 + eta*0.18
     return eta, round(price,2)
+
+def estimate(ride):
+    km=road_distance_km([(ride.get('origin_lat'),ride.get('origin_lng')),(ride.get('destination_lat'),ride.get('destination_lng'))])
+    if km is None: km=haversine(ride.get('origin_lat'),ride.get('origin_lng'),ride.get('destination_lat'),ride.get('destination_lng'))
+    return estimate_km(km)
 
 def fare_reference(con):
     row=con.execute('''SELECT latitude,longitude FROM stops WHERE active=1 AND lower(replace(name,'í','i'))=lower('entrevias') LIMIT 1''').fetchone()
@@ -62,12 +80,22 @@ def fare_reference(con):
     return CENTRAL_FARE_LAT,CENTRAL_FARE_LNG,CENTRAL_FARE_NAME
 
 def estimate_from_central(con, ride):
-    lat,lng,name=fare_reference(con); target_lat=ride.get('destination_lat') or ride.get('origin_lat'); target_lng=ride.get('destination_lng') or ride.get('origin_lng')
-    return estimate({'origin_lat':lat,'origin_lng':lng,'destination_lat':target_lat,'destination_lng':target_lng}),name
+    central_lat,central_lng,name=fare_reference(con)
+    origin=(ride.get('origin_lat'),ride.get('origin_lng')); destination=(ride.get('destination_lat'),ride.get('destination_lng'))
+    if origin[0] is not None and origin[1] is not None and destination[0] is not None and destination[1] is not None:
+        total=road_distance_km([(central_lat,central_lng),origin,destination])
+        if total is None:
+            total=(haversine(central_lat,central_lng,origin[0],origin[1]) or 0)+(haversine(origin[0],origin[1],destination[0],destination[1]) or 0)
+    else:
+        target=destination if destination[0] is not None and destination[1] is not None else origin
+        total=road_distance_km([(central_lat,central_lng),target]) if target[0] is not None and target[1] is not None else None
+        if total is None and target[0] is not None and target[1] is not None: total=haversine(central_lat,central_lng,target[0],target[1])
+    return estimate_km(total),name
 
-def driver_dispatch(con, origin_lat, origin_lng):
+def driver_dispatch(con, origin_lat, origin_lng, exclude_driver_id=None):
     if origin_lat is None or origin_lng is None: return None
     for q in queue_rows(con):
+        if exclude_driver_id and q['driver_id']==exclude_driver_id: continue
         loc=con.execute('SELECT lat,lng FROM locations WHERE entity_id=? AND role="driver"',(q['driver_id'],)).fetchone()
         if loc and (haversine(origin_lat,origin_lng,loc['lat'],loc['lng']) or 999) <= SERVICE_ZONE_KM:
             return {'driver_id':q['driver_id'],'mode':'queue','distance_km':round(haversine(origin_lat,origin_lng,loc['lat'],loc['lng']),2)}
@@ -75,6 +103,7 @@ def driver_dispatch(con, origin_lat, origin_lng):
         WHERE l.role="driver" AND d.status="active" AND d.available=1 AND d.busy=0''').fetchall()
     candidates=[]
     for row in rows:
+        if exclude_driver_id and row['entity_id']==exclude_driver_id: continue
         distance=haversine(origin_lat,origin_lng,row['lat'],row['lng'])
         if distance is not None and distance<=SERVICE_ZONE_KM: candidates.append((distance,row['entity_id']))
     if not candidates: return None
@@ -94,6 +123,7 @@ class RideRequest(BaseModel):
     customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
     origin_lat: Optional[float]=None; origin_lng: Optional[float]=None; destination_lat: Optional[float]=None; destination_lng: Optional[float]=None
 class RideAccept(BaseModel): driver_id: str
+class RideTimeout(BaseModel): driver_id: str
 class RideStatus(BaseModel): status: str
 class LocationUpdate(BaseModel):
     entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None; available: Optional[bool]=None
@@ -252,6 +282,21 @@ def accept_ride(ride_id: str, data: RideAccept):
     if not driver['available'] or driver['busy']: con.close(); raise HTTPException(409,'El taxi no está libre')
     (eta,price),_=estimate_from_central(con,dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
     return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
+
+@app.post('/api/rides/{ride_id}/timeout')
+def timeout_ride(ride_id: str, data: RideTimeout):
+    con=db(); ride=con.execute('SELECT * FROM rides WHERE id=?',(ride_id,)).fetchone(); driver=con.execute('SELECT * FROM drivers WHERE id=? AND status="active"',(data.driver_id,)).fetchone()
+    if not ride: con.close(); raise HTTPException(404,'Servicio no encontrado')
+    if not driver: con.close(); raise HTTPException(403,'El taxista no está activo')
+    if ride['status']!='requested' or ride['driver_id']!=data.driver_id:
+        con.close(); raise HTTPException(409,'La solicitud ya cambió de taxista o fue aceptada')
+    current=now()
+    # El taxista que no responde pasa al final de la cola unificada.
+    con.execute('UPDATE queue_entries SET joined_at=?,left_at=NULL WHERE driver_id=? AND status="waiting"',(current,data.driver_id))
+    dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id)
+    next_driver=dispatch['driver_id'] if dispatch else None
+    con.execute('UPDATE rides SET driver_id=? WHERE id=? AND status="requested"',(next_driver,ride_id)); con.commit(); con.close()
+    return {'ride_id':ride_id,'status':'requested','previous_driver_id':data.driver_id,'next_driver_id':next_driver,'dispatch':dispatch,'zone_km':SERVICE_ZONE_KM}
 
 @app.get('/api/rides/open')
 def open_rides(driver_id: Optional[str]=None):
