@@ -12,20 +12,30 @@
 <header><div><b>Taxi Ya</b><span>Alcantarilla · Murcia</span></div><small>APP MVP</small></header>
 <main>
   <section class="intro"><p>PLATAFORMA DE PRUEBA</p><h1>Tu taxi, más cerca.</h1><div id="notice" class="notice">Conectando con el servidor…</div></section>
-  <nav><button class="tab active" data-view="customer">Cliente</button><button class="tab" data-view="driver">Taxista</button><button class="tab" data-view="admin">Administrador</button></nav>
-  <section id="customer" class="view active">
-    <div class="card"><h2>Solicitar taxi</h2><p>Rellena el trayecto y recibe una estimación.</p>
-      <div id="customerMap" class="map" aria-label="Mapa del cliente"></div>
-      <div class="map-actions"><button class="secondary" id="customerGps">Usar mi ubicación GPS</button><span id="customerGpsStatus">GPS sin activar</span></div>
-      <label>Nombre<input id="customerName" value="José"></label><label>Teléfono<input id="customerPhone" value="600000002"></label><label>Origen<input id="origin" value="Calle Mayor, Alcantarilla"></label><label>Destino<input id="destination" value="Hospital de Alcantarilla"></label>
-      <button class="primary" id="request">Solicitar taxi</button><div id="rideResult" class="result hidden"></div>
+
+  <section id="auth" class="auth-panel">
+    <div id="rolePicker">
+      <h2>¿Cómo vas a usar Taxi Ya?</h2>
+      <p>Elige tu perfil. Una vez dentro solo verás tu propia pantalla.</p>
+      <div class="role-grid">
+        <button class="role-card" id="chooseCustomer"><strong>Cliente</strong><span>Pedir un taxi y ver tu trayecto.</span></button>
+        <button class="role-card" id="chooseDriver"><strong>Taxista</strong><span>Gestionar tu parada y tu ubicación.</span></button>
+        <button class="role-card" id="chooseAdmin"><strong>Administrador</strong><span>Gestionar paradas y consultar el resumen.</span></button>
+      </div>
     </div>
+
+    <div id="customerOnboarding" class="onboarding hidden"><h2>Crear acceso de cliente</h2><p>Estos datos quedarán guardados en este dispositivo.</p><label>Nombre<input id="customerSignupName" value="José"></label><label>Teléfono<input id="customerSignupPhone" value="600000002"></label><button class="primary" id="customerEnter">Entrar como cliente</button></div>
+
+    <div id="driverOnboarding" class="onboarding hidden"><h2>Registro de taxista</h2><p>Completa tus datos para activar el perfil de taxista.</p><label>Nombre<input id="driverName" value="Juan García"></label><label>Teléfono<input id="driverPhone" value="600000001"></label><label>Licencia<input id="license" value="LIC-001"></label><label>Matrícula<input id="plate" value="1234 ABC"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div><div id="driverActivation" class="hidden"><label>ID del registro<input id="driverId" readonly></label><label>Clave de activación<input id="code" inputmode="numeric" value="123456"></label><button class="primary" id="activate">Activar y entrar</button></div></div>
+
+    <div id="adminOnboarding" class="onboarding hidden"><h2>Acceso de administrador</h2><p>Esta entrada está reservada para la gestión de Taxi Ya.</p><label>Clave de administrador<input id="adminCode" inputmode="numeric" value="123456"></label><button class="primary" id="adminEnter">Entrar como administrador</button><div id="adminLoginResult" class="result hidden"></div></div>
   </section>
-  <section id="driver" class="view"><div class="grid">
-    <div class="card"><h2>Registro de taxista</h2><label>Nombre<input id="driverName" value="Juan García"></label><label>Teléfono<input id="driverPhone" value="600000001"></label><label>Licencia<input id="license" value="LIC-001"></label><label>Matrícula<input id="plate" value="1234 ABC"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div></div>
-    <div class="card"><h2>Activación y parada</h2><p>Introduce el ID recibido y la clave inicial.</p><div id="driverMap" class="map" aria-label="Mapa del taxista"></div><div class="map-actions"><button class="secondary" id="driverGps">Compartir ubicación</button><span id="driverGpsStatus">GPS sin activar</span></div><label>ID del registro<input id="driverId" placeholder="Se rellena al registrarte"></label><label>Clave<input id="code" inputmode="numeric" value="123456"></label><label>ID de parada<input id="stopId" placeholder="Se rellena al crear una parada"></label><button class="primary" id="activate">Activar cuenta</button><button class="secondary" id="join">Entrar en cola</button><div id="queueResult" class="result hidden"></div></div>
-  </div></section>
-  <section id="admin" class="view"><div class="grid"><div class="card"><h2>Crear parada</h2><label>Nombre<input id="stopName" value="Parada Centro"></label><label>Dirección<input id="stopAddress" value="Centro, Alcantarilla"></label><button class="primary" id="createStop">Crear parada</button><div id="stopResult" class="result hidden"></div></div><div class="card"><h2>Resumen</h2><button class="secondary" id="refresh">Actualizar datos</button><div id="summary" class="summary"></div></div></div></section>
+
+  <section id="customerApp" class="role-view hidden customer-shell"><div class="session-bar"><div><b>Área de cliente</b><span id="customerWelcome"></span></div><button class="logout" data-logout>Cerrar sesión</button></div><div class="customer-card"><div class="customer-brand"><b>Taxi Ya</b><span>Pide tu taxi</span></div><div id="customerMap" class="map" aria-label="Mapa del cliente"></div><div class="customer-step"><div class="step-title"><i>1</i><b>¿DÓNDE TE RECOGEMOS?</b></div><label>Recogida<input id="origin" value="Calle Mayor, Alcantarilla"></label><button class="customer-button" id="customerGps">Usar mi ubicación actual</button><small id="customerGpsStatus">También puedes indicar la recogida escribiendo una dirección.</small></div><div class="customer-step"><div class="step-title"><i>2</i><b>¿A DÓNDE VAS? <em>(OPCIONAL)</em></b></div><label>Destino<input id="destination" placeholder="Indica tu destino"></label></div><button class="customer-button request-button" id="request">Pedir taxi</button><div id="rideResult" class="result hidden"></div></div></section>
+
+  <section id="driverApp" class="role-view hidden driver-shell"><div class="session-bar"><div><b>Área de taxista</b><span id="driverWelcome"></span></div><div class="driver-actions"><span class="availability"><i></i> Disponible</span><button class="logout" data-logout>Cerrar sesión</button></div></div><div class="driver-card"><div class="driver-brand"><b>Taxi Ya</b><span>Taxista · Alcantarilla</span></div><div id="driverMap" class="map" aria-label="Mapa del taxista"></div><div class="map-actions"><button class="driver-button" id="driverGps">Compartir ubicación</button><span id="driverGpsStatus">GPS sin activar</span></div><div class="queue-controls"><label>Parada<select id="driverStopId"><option value="">Selecciona una parada</option></select></label><button class="driver-button" id="join">Entrar en cola</button></div><div id="queueResult" class="result hidden"></div><div id="driverQueueCard" class="queue-card hidden"><div class="queue-label">COLA UNIFICADA</div><div class="queue-content"><strong id="queuePosition">1</strong><div><h3 id="queueTitle">Turno en la parada unificada</h3><p id="queueStop">Parada seleccionada</p><small id="queueTime">Entrada registrada ahora</small></div></div></div></div></section>
+
+  <section id="adminApp" class="role-view hidden"><div class="session-bar"><div><b>Área de administrador</b><span>Gestión de Taxi Ya</span></div><button class="logout" data-logout>Cerrar sesión</button></div><div class="grid"><div class="card"><h2>Crear parada</h2><label>Nombre<input id="stopName" value="Parada Centro"></label><label>Dirección<input id="stopAddress" value="Centro, Alcantarilla"></label><button class="primary" id="createStop">Crear parada</button><div id="stopResult" class="result hidden"></div></div><div class="card"><h2>Resumen</h2><button class="secondary" id="refresh">Actualizar datos</button><div id="summary" class="summary"></div></div></div></section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="/app.js"></script>
