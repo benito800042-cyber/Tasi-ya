@@ -109,6 +109,24 @@ def startup(): init_db()
 @app.get('/api/health')
 def health(): return {'ok': True, 'service':'taxi-ya-api'}
 
+GEOCODE_CACHE={}
+@app.get('/api/geocode')
+async def geocode(q: str):
+    query=' '.join((q or '').split())
+    if len(query)<3: return []
+    key=query.lower()
+    if key in GEOCODE_CACHE: return GEOCODE_CACHE[key]
+    search=query if any(x in key for x in ('murcia','alcantarilla','españa','spain')) else f'{query}, Murcia, España'
+    try:
+        async with httpx.AsyncClient(timeout=8,headers={'User-Agent':'TaxiYa-MVP/1.0'}) as client:
+            response=await client.get('https://nominatim.openstreetmap.org/search',params={'q':search,'format':'jsonv2','addressdetails':1,'limit':5,'countrycodes':'es','accept-language':'es'})
+            response.raise_for_status(); raw=response.json()
+        results=[{'display_name':x.get('display_name',''),'lat':float(x['lat']),'lng':float(x['lon']),'type':x.get('type','')} for x in raw if x.get('lat') and x.get('lon')]
+    except Exception:
+        results=[]
+    GEOCODE_CACHE[key]=results
+    return results
+
 @app.post('/api/drivers/register')
 def register_driver(data: DriverRegister):
     con=db(); driver_id=str(uuid.uuid4())
