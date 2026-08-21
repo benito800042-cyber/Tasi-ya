@@ -116,14 +116,28 @@ async def geocode(q: str):
     if len(query)<3: return []
     key=query.lower()
     if key in GEOCODE_CACHE: return GEOCODE_CACHE[key]
-    search=query if any(x in key for x in ('murcia','alcantarilla','españa','spain')) else f'{query}, Murcia, España'
+    search=query if any(x in key for x in ('murcia','alcantarilla','españa','spain')) else f'{query}, Alcantarilla, Murcia, España'
     try:
         async with httpx.AsyncClient(timeout=8,headers={'User-Agent':'TaxiYa-MVP/1.0'}) as client:
-            response=await client.get('https://nominatim.openstreetmap.org/search',params={'q':search,'format':'jsonv2','addressdetails':1,'limit':5,'countrycodes':'es','accept-language':'es'})
-            response.raise_for_status(); raw=response.json()
-        results=[{'display_name':x.get('display_name',''),'lat':float(x['lat']),'lng':float(x['lon']),'type':x.get('type','')} for x in raw if x.get('lat') and x.get('lon')]
-    except Exception:
+            response=await client.get('https://photon.komoot.io/api/',params={'q':search,'limit':5,'lat':CENTRAL_FARE_LAT,'lon':CENTRAL_FARE_LNG})
+            response.raise_for_status(); features=response.json().get('features',[])
         results=[]
+        for feature in features:
+            props=feature.get('properties',{}); coords=feature.get('geometry',{}).get('coordinates',[])
+            if len(coords)<2: continue
+            parts=[]
+            if props.get('name'): parts.append(props['name'] + (f" {props['housenumber']}" if props.get('housenumber') else ''))
+            parts += [props.get(k) for k in ('locality','city','state','postcode','country') if props.get(k)]
+            results.append({'display_name':', '.join(dict.fromkeys(parts)),'lat':float(coords[1]),'lng':float(coords[0]),'type':props.get('type','')})
+        if not results: raise RuntimeError('sin resultados en Photon')
+    except Exception:
+        try:
+            async with httpx.AsyncClient(timeout=8,headers={'User-Agent':'TaxiYa-MVP/1.0'}) as client:
+                response=await client.get('https://nominatim.openstreetmap.org/search',params={'q':search,'format':'jsonv2','addressdetails':1,'limit':5,'countrycodes':'es','accept-language':'es'})
+                response.raise_for_status(); raw=response.json()
+            results=[{'display_name':x.get('display_name',''),'lat':float(x['lat']),'lng':float(x['lon']),'type':x.get('type','')} for x in raw if x.get('lat') and x.get('lon')]
+        except Exception:
+            results=[]
     GEOCODE_CACHE[key]=results
     return results
 
