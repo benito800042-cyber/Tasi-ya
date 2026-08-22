@@ -13,6 +13,11 @@ ACTIVATION_CODE = os.getenv('TAXI_ACTIVATION_CODE', '123456')
 app = FastAPI(title='Taxi Ya API', version='0.1.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
+DEFAULT_STOPS = [
+    ('Entrevías', 'Centro de Alcantarilla', 37.969436, -1.215477),
+    ('CASA', 'Centro, Alcantarilla', 37.964371, -1.232936),
+]
+
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS drivers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE, license TEXT, plate TEXT, status TEXT NOT NULL DEFAULT 'pending', device_id TEXT, created_at TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 0, busy INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS stops (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT, latitude REAL, longitude REAL, radius_m REAL NOT NULL DEFAULT 50, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
@@ -47,6 +52,10 @@ def init_db():
     presence_cols={r['name'] for r in con.execute('PRAGMA table_info(stop_presence)').fetchall()}
     if 'outside_since' not in presence_cols: con.execute('ALTER TABLE stop_presence ADD COLUMN outside_since TEXT')
     con.execute('UPDATE stops SET radius_m=50 WHERE radius_m IS NULL')
+    if con.execute('SELECT COUNT(*) FROM stops WHERE active=1').fetchone()[0] == 0:
+        for name, address, lat, lng in DEFAULT_STOPS:
+            con.execute('INSERT INTO stops(id,name,address,latitude,longitude,radius_m,active,created_at) VALUES (?,?,?,?,?,?,?,?)',
+                        (str(uuid.uuid4()), name, address, lat, lng, 50, 1, now()))
     con.commit(); con.close()
 
 def row_dict(row): return dict(row) if row else None
