@@ -205,9 +205,12 @@ def register_driver(data: DriverRegister):
 @app.post('/api/drivers/activate')
 def activate_driver(data: DriverActivate):
     if code_hash(data.code) != code_hash(ACTIVATION_CODE): raise HTTPException(403,'Código de activación incorrecto')
-    con=db(); cur=con.execute('UPDATE drivers SET status="active", device_id=?, available=0, busy=0 WHERE id=? AND status IN ("pending","active")',(data.device_id,data.driver_id)); con.commit(); con.close()
-    if cur.rowcount != 1: raise HTTPException(404,'Taxista no encontrado')
-    return {'driver_id':data.driver_id,'status':'active','device_bound':True}
+    con=db()
+    row=con.execute('SELECT id,name,phone FROM drivers WHERE id=? AND status IN ("pending","active")',(data.driver_id,)).fetchone()
+    if not row:
+        con.close(); raise HTTPException(404,'Taxista no encontrado')
+    con.execute('UPDATE drivers SET status="active", device_id=?, available=0, busy=0 WHERE id=? AND status IN ("pending","active")',(data.device_id,data.driver_id)); con.commit(); con.close()
+    return {'driver_id':row['id'],'name':row['name'],'phone':row['phone'],'status':'active','available':False,'device_bound':True}
 
 @app.post('/api/stops')
 def create_stop(data: StopCreate):

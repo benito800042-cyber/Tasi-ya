@@ -15,12 +15,15 @@ function openAdmin(){hideAll();$('auth').classList.add('hidden');$('adminApp').c
 
 document.querySelectorAll('[data-logout]').forEach(b=>b.onclick=showAuth);
 $('chooseCustomer').onclick=()=>showOnboarding('customerOnboarding');
-$('chooseDriver').onclick=()=>showOnboarding('driverOnboarding');
+$('chooseDriver').onclick=()=>showOnboarding('driverChoice');
+$('driverRegisterChoice').onclick=()=>showOnboarding('driverOnboarding');
+$('driverLoginChoice').onclick=()=>showOnboarding('driverExisting');
 $('chooseAdmin').onclick=()=>showOnboarding('adminOnboarding');
 $('customerEnter').onclick=()=>{const name=$('customerSignupName').value.trim(),phone=$('customerSignupPhone').value.trim();if(!name||!phone)return result('rideResult','Indica nombre y teléfono.',true);saveSession({role:'customer',name,phone});openCustomer({role:'customer',name,phone})};
 $('adminEnter').onclick=()=>{if($('adminCode').value!=='123456'){result('adminLoginResult','Clave incorrecta.',true);return}saveSession({role:'admin'});openAdmin()};
 $('register').onclick=async()=>{try{const d=await api('/drivers/register',{method:'POST',body:JSON.stringify({name:$('driverName').value,phone:$('driverPhone').value,license:$('license').value,plate:$('plate').value})});$('driverId').value=d.driver_id;$('driverActivation').classList.remove('hidden');result('driverResult','Registro creado. Ahora activa tu perfil con la clave.')}catch(e){result('driverResult',e.message,true)}};
-$('activate').onclick=async()=>{try{const d=await api('/drivers/activate',{method:'POST',body:JSON.stringify({driver_id:$('driverId').value,code:$('code').value,device_id:'web-demo-'+Date.now()})});const s={role:'driver',driverId:$('driverId').value,name:$('driverName').value,phone:$('driverPhone').value,status:d.status,available:false};saveSession(s);openDriver(s)}catch(e){result('driverResult',e.message,true)}};
+$('activate').onclick=async()=>{try{const d=await api('/drivers/activate',{method:'POST',body:JSON.stringify({driver_id:$('driverId').value,code:$('code').value,device_id:'web-demo-'+Date.now()})});const s={role:'driver',driverId:d.driver_id,name:d.name||$('driverName').value,phone:d.phone||$('driverPhone').value,status:d.status,available:false};saveSession(s);openDriver(s)}catch(e){result('driverResult',e.message,true)}};
+$('driverLogin').onclick=async()=>{const driverId=$('existingDriverId').value.trim(),code=$('existingCode').value.trim();if(!driverId||!code)return result('existingDriverResult','Indica el ID del registro y la clave de acceso.',true);try{const d=await api('/drivers/activate',{method:'POST',body:JSON.stringify({driver_id:driverId,code,device_id:'web-demo-'+Date.now()})});const s={role:'driver',driverId:d.driver_id,name:d.name||'Taxista',phone:d.phone||'',status:d.status,available:false};saveSession(s);openDriver(s)}catch(e){result('existingDriverResult',e.message,true)}};
 $('enableDriverSound').onclick=enableDriverSound;
 
 const alcantarilla=[37.969,-1.217];const maps=[];let customerOriginCoords=null,customerDestinationCoords=null;const markers={};const taxiMapMarkers={};const previousCoords={};let customerMap,driverMap,adminMap;const watchers=[];let taxiRefreshTimer,driverRideTimer;let knownOpenRideIds=new Set(),driverRideInitialized=false,driverAudioContext=null,driverSoundEnabled=false,driverAlertInterval=null,driverAlertStopTimer=null;const rideTimeoutTimers={};
@@ -72,4 +75,4 @@ $('createStop').onclick=async()=>{try{const payload={name:$('stopName').value,ad
 $('refresh').onclick=loadAdminDashboard;
 $('saveFare').onclick=()=>{localStorage.setItem('taxiYaFare',JSON.stringify({flag:$('fareFlag').value,km:$('fareKm').value,minute:$('fareMinute').value,minimum:$('fareMinimum').value}));result('fareResult','Tarifa guardada en este dispositivo para la prueba.')}
 api('/health').then(()=>$('notice').textContent='Servidor conectado · sesión protegida por perfil').catch(()=>$('notice').textContent='Servidor no disponible');
-const session=getSession();if(session?.role==='customer')openCustomer(session);else if(session?.role==='driver')openDriver(session);else if(session?.role==='admin')openAdmin();else showAuth();
+showAuth();
