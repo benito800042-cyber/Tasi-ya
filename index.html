@@ -6,12 +6,12 @@
   <meta name="theme-color" content="#0b6b68">
   <title>Taxi Ya · App</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-  <link rel="stylesheet" href="/style.css?v=20260821-final8">
+  <link rel="stylesheet" href="/style.css?v=20260821-final10">
 </head>
 <body>
 <header><div><b>Taxi Ya</b><span>Alcantarilla · Murcia</span></div><small>APP MVP</small></header>
 <main>
-  <section class="intro"><p>PLATAFORMA DE PRUEBA</p><h1>Tu taxi, más cerca.</h1><div id="notice" class="notice">Conectando con el servidor…</div></section>
+  <section id="intro" class="intro"><p>PLATAFORMA DE PRUEBA</p><h1>Tu taxi, más cerca.</h1><div id="notice" class="notice">Conectando con el servidor…</div></section>
 
   <section id="auth" class="auth-panel">
     <div id="rolePicker">
@@ -24,11 +24,11 @@
       </div>
     </div>
 
-    <div id="customerOnboarding" class="onboarding hidden"><h2>Crear acceso de cliente</h2><p>Estos datos quedarán guardados en este dispositivo.</p><label>Nombre<input id="customerSignupName" value="José"></label><label>Teléfono<input id="customerSignupPhone" value="600000002"></label><button class="primary" id="customerEnter">Entrar como cliente</button></div>
+    <div id="customerOnboarding" class="onboarding hidden"><h2>Crear acceso de cliente</h2><p>Introduce tus datos para crear el acceso.</p><label>Nombre<input id="customerSignupName" placeholder="Nombre y apellidos"></label><label>Teléfono<input id="customerSignupPhone" inputmode="tel" placeholder="Número de teléfono"></label><button class="primary" id="customerEnter">Entrar como cliente</button></div>
 
-    <div id="driverOnboarding" class="onboarding hidden"><h2>Registro de taxista</h2><p>Completa tus datos para activar el perfil de taxista.</p><label>Nombre<input id="driverName" value="Juan García"></label><label>Teléfono<input id="driverPhone" value="600000001"></label><label>Licencia<input id="license" value="LIC-001"></label><label>Matrícula<input id="plate" value="1234 ABC"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div><div id="driverActivation" class="hidden"><label>ID del registro<input id="driverId" readonly></label><label>Clave de activación<input id="code" inputmode="numeric" value="123456"></label><button class="primary" id="activate">Activar y entrar</button></div></div>
+    <div id="driverOnboarding" class="onboarding hidden"><h2>Registro de taxista</h2><p>Completa tus datos y escribe la clave de acceso que te haya facilitado Taxi Ya.</p><label>Nombre<input id="driverName" placeholder="Nombre y apellidos"></label><label>Teléfono<input id="driverPhone" inputmode="tel" placeholder="Número de teléfono"></label><label>Licencia<input id="license" placeholder="Número de licencia"></label><label>Matrícula<input id="plate" placeholder="Matrícula del vehículo"></label><button class="primary" id="register">Registrarme</button><div id="driverResult" class="result hidden"></div><div id="driverActivation" class="hidden"><label>ID del registro<input id="driverId" readonly></label><label>Clave de acceso<input id="code" inputmode="numeric" placeholder="Escribe la clave de acceso"></label><button class="primary" id="activate">Activar y entrar</button></div></div>
 
-    <div id="adminOnboarding" class="onboarding hidden"><h2>Acceso de administrador</h2><p>Esta entrada está reservada para la gestión de Taxi Ya.</p><label>Clave de administrador<input id="adminCode" inputmode="numeric" value="123456"></label><button class="primary" id="adminEnter">Entrar como administrador</button><div id="adminLoginResult" class="result hidden"></div></div>
+    <div id="adminOnboarding" class="onboarding hidden"><h2>Acceso de administrador</h2><p>Esta entrada está reservada para la gestión de Taxi Ya.</p><label>Clave de administrador<input id="adminCode" inputmode="numeric" placeholder="Escribe la clave de administrador"></label><button class="primary" id="adminEnter">Entrar como administrador</button><div id="adminLoginResult" class="result hidden"></div></div>
   </section>
 
   <section id="customerApp" class="role-view hidden customer-shell"><div class="session-bar"><div><b>Área de cliente</b><span id="customerWelcome"></span></div><button class="logout" data-logout>Cerrar sesión</button></div><div class="customer-card"><div class="customer-brand"><b>Taxi Ya</b><span>Pide tu taxi</span></div><div id="customerMap" class="map" aria-label="Mapa del cliente"></div><div class="taxi-legend"><span><i class="free-dot"></i> Taxi libre</span><span><i class="busy-dot"></i> Taxi ocupado</span></div><div class="customer-step"><div class="step-title"><i>1</i><b>¿DÓNDE TE RECOGEMOS?</b></div><label class="address-field">Recogida<input id="origin" value="Calle Mayor, Alcantarilla" autocomplete="off"><div id="originSuggestions" class="address-suggestions hidden"></div></label><button class="customer-button" id="customerGps">Usar mi ubicación actual</button><small id="customerGpsStatus">También puedes indicar la recogida escribiendo una dirección.</small></div><div class="customer-step"><div class="step-title"><i>2</i><b>¿A DÓNDE VAS? <em>(OPCIONAL)</em></b></div><label class="address-field">Destino<input id="destination" placeholder="Indica tu destino" autocomplete="off"><div id="destinationSuggestions" class="address-suggestions hidden"></div></label></div><button class="customer-button request-button" id="request">Pedir taxi</button><div id="rideResult" class="result hidden"></div></div></section>
