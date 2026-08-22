@@ -135,6 +135,8 @@ class DriverRegister(BaseModel):
     name: str = Field(min_length=2); phone: str = Field(min_length=6); license: str=''; plate: str=''
 class DriverActivate(BaseModel):
     driver_id: str; code: str; device_id: str = Field(min_length=3)
+class DriverLogin(BaseModel):
+    identifier: str = Field(min_length=3); code: str; device_id: str = Field(min_length=3)
 class StopCreate(BaseModel):
     name: str = Field(min_length=2); address: str=''
     latitude: Optional[float]=None; longitude: Optional[float]=None
@@ -210,6 +212,16 @@ def activate_driver(data: DriverActivate):
     if not row:
         con.close(); raise HTTPException(404,'Taxista no encontrado')
     con.execute('UPDATE drivers SET status="active", device_id=?, available=0, busy=0 WHERE id=? AND status IN ("pending","active")',(data.device_id,data.driver_id)); con.commit(); con.close()
+    return {'driver_id':row['id'],'name':row['name'],'phone':row['phone'],'status':'active','available':False,'device_bound':True}
+
+@app.post('/api/drivers/login')
+def driver_login(data: DriverLogin):
+    if code_hash(data.code) != code_hash(ACTIVATION_CODE): raise HTTPException(403,'Contraseña incorrecta')
+    identifier=data.identifier.strip()
+    con=db(); row=con.execute('SELECT id,name,phone,status FROM drivers WHERE phone=? OR license=? LIMIT 1',(identifier,identifier)).fetchone()
+    if not row:
+        con.close(); raise HTTPException(404,'No hay un taxista registrado con ese móvil o licencia')
+    con.execute('UPDATE drivers SET status="active", device_id=?, available=0, busy=0 WHERE id=?',(data.device_id,row['id'])); con.commit(); con.close()
     return {'driver_id':row['id'],'name':row['name'],'phone':row['phone'],'status':'active','available':False,'device_bound':True}
 
 @app.post('/api/stops')
