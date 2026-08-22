@@ -16,6 +16,8 @@ app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], all
 DEFAULT_STOPS = [
     ('Entrevías', 'Centro de Alcantarilla', 37.969436, -1.215477),
     ('CASA', 'Centro, Alcantarilla', 37.964371, -1.232936),
+    ('CASCO', 'Zona casco', 37.969612, -1.206567),
+    ('San Jose', 'Hospital', 37.973891, -1.224789),
 ]
 
 SCHEMA = '''
