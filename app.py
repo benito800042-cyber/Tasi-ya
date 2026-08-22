@@ -24,7 +24,15 @@ CREATE TABLE IF NOT EXISTS locations (entity_id TEXT NOT NULL, role TEXT NOT NUL
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def db():
-    con = sqlite3.connect(DB_PATH); con.row_factory = sqlite3.Row; con.execute('PRAGMA foreign_keys=ON'); return con
+    # Render Free can receive GPS and registration requests at the same time.
+    # WAL plus a busy timeout prevents a short write from returning a 500.
+    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    con.execute('PRAGMA busy_timeout=30000')
+    con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA synchronous=NORMAL')
+    con.execute('PRAGMA foreign_keys=ON')
+    return con
 def init_db():
     con=db(); con.executescript(SCHEMA)
     stop_cols={r['name'] for r in con.execute('PRAGMA table_info(stops)').fetchall()}
