@@ -370,7 +370,19 @@ def update_ride_status(ride_id: str, data: RideStatus):
 
 @app.get('/api/rides/driver/{driver_id}')
 def driver_rides(driver_id: str):
-    con=db(); rows=con.execute('SELECT * FROM rides WHERE driver_id=? AND status!="completed" ORDER BY created_at DESC',(driver_id,)).fetchall(); con.close(); return [row_dict(r) for r in rows]
+    con=db(); rows=con.execute('SELECT * FROM rides WHERE driver_id=? AND status NOT IN ("completed","cancelled") ORDER BY created_at DESC',(driver_id,)).fetchall(); con.close(); return [row_dict(r) for r in rows]
+
+@app.post('/api/rides/{ride_id}/cancel')
+def cancel_ride(ride_id: str):
+    con=db(); ride=con.execute('SELECT * FROM rides WHERE id=?',(ride_id,)).fetchone()
+    if not ride: con.close(); raise HTTPException(404,'Servicio no encontrado')
+    if ride['status'] in ('completed','cancelled','picked_up'):
+        con.close(); raise HTTPException(409,'Este servicio ya no se puede cancelar')
+    if ride['driver_id']:
+        con.execute('UPDATE drivers SET available=1,busy=0 WHERE id=?',(ride['driver_id'],))
+    con.execute('UPDATE rides SET status="cancelled" WHERE id=?',(ride_id,)); con.commit()
+    updated=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+    return row_dict(updated)
 
 @app.get('/api/rides/{ride_id}')
 def get_ride(ride_id: str):
