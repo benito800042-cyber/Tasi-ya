@@ -436,7 +436,7 @@ def update_location(data: LocationUpdate):
         (data.entity_id, data.role, data.lat, data.lng, data.ride_id, current))
     auto_queue,exited=process_driver_presence(con,data.entity_id,data.lat,data.lng) if data.role=='driver' else (None,[])
     current_entry=queue_entry_for_driver(con,data.entity_id) if data.role=='driver' else None
-    queue_state={'queue_entry_id':current_entry['id'],'stop_id':current_entry['stop_id'],'position':queue_position(con,current_entry['id'])} if current_entry else None
+    queue_state={'queue_entry_id':current_entry['id'],'stop_id':current_entry['stop_id'],'position':queue_position(con,current_entry['id']),'stop_name':con.execute('SELECT name FROM stops WHERE id=?',(current_entry['stop_id'],)).fetchone()['name']} if current_entry else None
     con.commit(); con.close()
     return {'ok': True, 'sharing': True, 'updated_at': current, 'auto_queue':auto_queue, 'queue':queue_state, 'exited_stop_ids':exited}
 
