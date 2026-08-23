@@ -54,8 +54,11 @@ def init_db():
     presence_cols={r['name'] for r in con.execute('PRAGMA table_info(stop_presence)').fetchall()}
     if 'outside_since' not in presence_cols: con.execute('ALTER TABLE stop_presence ADD COLUMN outside_since TEXT')
     con.execute('UPDATE stops SET radius_m=50 WHERE radius_m IS NULL')
-    if con.execute('SELECT COUNT(*) FROM stops WHERE active=1').fetchone()[0] == 0:
-        for name, address, lat, lng in DEFAULT_STOPS:
+    # Keep the four operational stops available individually. If a stop was
+    # accidentally missing, restore only that stop without touching existing data.
+    existing_stop_names={r['name'] for r in con.execute('SELECT name FROM stops').fetchall()}
+    for name, address, lat, lng in DEFAULT_STOPS:
+        if name not in existing_stop_names:
             con.execute('INSERT INTO stops(id,name,address,latitude,longitude,radius_m,active,created_at) VALUES (?,?,?,?,?,?,?,?)',
                         (str(uuid.uuid4()), name, address, lat, lng, 50, 1, now()))
     con.commit(); con.close()
