@@ -320,7 +320,10 @@ def accept_ride(ride_id: str, data: RideAccept):
     if ride['status']!='requested': con.close(); raise HTTPException(409,'El servicio ya no está disponible')
     if ride['driver_id'] and ride['driver_id']!=data.driver_id: con.close(); raise HTTPException(409,'El servicio está asignado a otro taxi')
     if not driver['available'] or driver['busy']: con.close(); raise HTTPException(409,'El taxi no está libre')
-    (eta,price),_=estimate_from_central(con,dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
+    (eta,price),_=estimate_from_central(con,dict(ride)); con.execute('UPDATE rides SET driver_id=?,status="accepted",eta_minutes=?,estimated_price=?,accepted_at=? WHERE id=?',(data.driver_id,eta,price,now(),ride_id));
+    # Un servicio por taxi: las demás solicitudes reservadas para este taxi
+    # quedan libres para que otro taxista disponible pueda recibirlas.
+    con.execute('UPDATE rides SET driver_id=NULL WHERE status="requested" AND driver_id=? AND id!=?',(data.driver_id,ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
     return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
 
 @app.post('/api/rides/{ride_id}/timeout')
@@ -341,7 +344,12 @@ def timeout_ride(ride_id: str, data: RideTimeout):
 @app.get('/api/rides/open')
 def open_rides(driver_id: Optional[str]=None):
     con=db()
-    if driver_id: rows=con.execute('SELECT * FROM rides WHERE status="requested" AND (driver_id=? OR driver_id IS NULL) ORDER BY created_at,id',(driver_id,)).fetchall()
+    if driver_id:
+        driver=con.execute('SELECT available,busy FROM drivers WHERE id=? AND status="active"',(driver_id,)).fetchone()
+        # Un taxista ocupado no debe seguir viendo ni recibiendo nuevas peticiones.
+        if not driver or not driver['available'] or driver['busy']:
+            con.close(); return []
+        rows=con.execute('SELECT * FROM rides WHERE status="requested" AND (driver_id=? OR driver_id IS NULL) ORDER BY created_at,id',(driver_id,)).fetchall()
     else: rows=con.execute('SELECT * FROM rides WHERE status="requested" ORDER BY created_at,id').fetchall()
     con.close(); return [row_dict(r) for r in rows]
 
