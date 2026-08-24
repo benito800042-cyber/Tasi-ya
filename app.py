@@ -324,7 +324,7 @@ def accept_ride(ride_id: str, data: RideAccept):
     # Un servicio por taxi: las demás solicitudes reservadas para este taxi
     # quedan libres para que otro taxista disponible pueda recibirlas.
     con.execute('UPDATE rides SET driver_id=NULL WHERE status="requested" AND driver_id=? AND id!=?',(data.driver_id,ride_id)); con.execute('UPDATE drivers SET available=0,busy=1 WHERE id=?',(data.driver_id,)); con.execute('UPDATE queue_entries SET status="left",left_at=? WHERE driver_id=? AND status="waiting"',(now(),data.driver_id)); con.commit(); con.close()
-    return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
+    return {'ride_id':ride_id,'status':'accepted','driver_id':data.driver_id,'driver_name':driver['name'],'license':driver['license'],'plate':driver['plate'],'eta_minutes':eta,'estimated_price':price,'availability':'busy','whatsapp':'pending_configuration'}
 
 @app.post('/api/rides/{ride_id}/timeout')
 def timeout_ride(ride_id: str, data: RideTimeout):
@@ -365,7 +365,7 @@ def update_ride_status(ride_id: str, data: RideStatus):
         # Al terminar, el taxista queda libre inmediatamente y podrá volver a la cola
         # en cuanto su siguiente actualización GPS confirme que está en una parada.
         con.execute('UPDATE drivers SET available=1,busy=0 WHERE id=?',(ride['driver_id'],))
-    con.commit(); updated=con.execute('SELECT r.*,d.name as driver_name,d.plate,d.available as driver_available,d.busy as driver_busy FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+    con.commit(); updated=con.execute('SELECT r.*,d.name as driver_name,d.license,d.plate,d.available as driver_available,d.busy as driver_busy FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
     return row_dict(updated)
 
 @app.get('/api/rides/driver/{driver_id}')
@@ -381,12 +381,12 @@ def cancel_ride(ride_id: str):
     if ride['driver_id']:
         con.execute('UPDATE drivers SET available=1,busy=0 WHERE id=?',(ride['driver_id'],))
     con.execute('UPDATE rides SET status="cancelled" WHERE id=?',(ride_id,)); con.commit()
-    updated=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+    updated=con.execute('SELECT r.*,d.name as driver_name,d.license,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
     return row_dict(updated)
 
 @app.get('/api/rides/{ride_id}')
 def get_ride(ride_id: str):
-    con=db(); ride=con.execute('SELECT r.*,d.name as driver_name,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
+    con=db(); ride=con.execute('SELECT r.*,d.name as driver_name,d.license,d.plate FROM rides r LEFT JOIN drivers d ON d.id=r.driver_id WHERE r.id=?',(ride_id,)).fetchone(); con.close()
     if not ride: raise HTTPException(404,'Servicio no encontrado')
     return row_dict(ride)
 
