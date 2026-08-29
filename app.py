@@ -3,12 +3,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import httpx
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 DB_PATH = os.getenv('DB_PATH', str(Path(__file__).with_name('taxi_ya.sqlite3')))
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
+VAPID_CLAIMS_EMAIL = os.getenv('VAPID_CLAIMS_EMAIL', 'mailto:taxiya@example.com')
 ACTIVATION_CODE = os.getenv('TAXI_ACTIVATION_CODE', '123456')
 app = FastAPI(title='Taxi Ya API', version='0.1.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
@@ -27,6 +31,7 @@ CREATE TABLE IF NOT EXISTS queue_entries (id TEXT PRIMARY KEY, stop_id TEXT NOT 
 CREATE TABLE IF NOT EXISTS stop_presence (driver_id TEXT NOT NULL, stop_id TEXT NOT NULL, entered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, inside INTEGER NOT NULL DEFAULT 1, outside_since TEXT, PRIMARY KEY(driver_id, stop_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS rides (id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL, origin TEXT NOT NULL, destination TEXT NOT NULL, origin_lat REAL, origin_lng REAL, destination_lat REAL, destination_lng REAL, driver_id TEXT, status TEXT NOT NULL DEFAULT 'requested', eta_minutes INTEGER, estimated_price REAL, created_at TEXT NOT NULL, accepted_at TEXT, dispatch_attempts INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS locations (entity_id TEXT NOT NULL, role TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, ride_id TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(entity_id, role));
+CREATE TABLE IF NOT EXISTS push_subscriptions (id TEXT PRIMARY KEY, driver_id TEXT NOT NULL, endpoint TEXT NOT NULL UNIQUE, subscription_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(driver_id) REFERENCES drivers(id));
 '''
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -158,6 +163,9 @@ class LocationUpdate(BaseModel):
     entity_id: str = Field(min_length=3); role: str; lat: float; lng: float; ride_id: Optional[str]=None; available: Optional[bool]=None
 class DriverAvailability(BaseModel):
     available: bool
+class PushSubscription(BaseModel):
+    driver_id: str
+    subscription: dict
 class WhatsAppRide(BaseModel):
     customer_name: str = Field(min_length=2); customer_phone: str = Field(min_length=6); origin: str; destination: str
     confirmed: bool = False
@@ -167,6 +175,31 @@ def startup(): init_db()
 
 @app.get('/api/health')
 def health(): return {'ok': True, 'service':'taxi-ya-api'}
+@app.get('/api/push/config')
+def push_config():
+    return {'enabled': bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY), 'public_key': VAPID_PUBLIC_KEY or None}
+
+def send_push(driver_id, payload):
+    if not (VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY): return
+    try:
+        from pywebpush import webpush
+        con=db(); rows=con.execute('SELECT id,subscription_json FROM push_subscriptions WHERE driver_id=?',(driver_id,)).fetchall(); con.close()
+        for row in rows:
+            try:
+                webpush(subscription_info=json.loads(row['subscription_json']), data=json.dumps(payload, ensure_ascii=False), vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims={'sub':VAPID_CLAIMS_EMAIL})
+            except Exception as exc:
+                if '404' in str(exc) or '410' in str(exc):
+                    con=db(); con.execute('DELETE FROM push_subscriptions WHERE id=?',(row['id'],)); con.commit(); con.close()
+    except Exception:
+        pass
+
+@app.post('/api/push/subscribe')
+def push_subscribe(data: PushSubscription):
+    subscription=json.dumps(data.subscription, ensure_ascii=False); endpoint=data.subscription.get('endpoint')
+    if not endpoint: raise HTTPException(400,'Suscripción no válida')
+    con=db(); con.execute('INSERT INTO push_subscriptions(id,driver_id,endpoint,subscription_json,created_at) VALUES (?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET driver_id=excluded.driver_id,subscription_json=excluded.subscription_json',(str(uuid.uuid4()),data.driver_id,endpoint,subscription,now())); con.commit(); con.close()
+    return {'ok':True,'enabled':bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)}
+
 
 GEOCODE_CACHE={}
 @app.get('/api/geocode')
@@ -314,6 +347,7 @@ def request_ride(data: RideRequest):
     exhausted=dispatch is None
     attempts=1 if assigned_driver else 4
     con.execute('INSERT INTO rides (id,customer_name,customer_phone,origin,destination,origin_lat,origin_lng,destination_lat,destination_lng,driver_id,status,eta_minutes,estimated_price,created_at,accepted_at,dispatch_attempts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(ride_id,data.customer_name,data.customer_phone,data.origin,data.destination,data.origin_lat,data.origin_lng,data.destination_lat,data.destination_lng,assigned_driver,'requested',eta,price,now(),None,attempts)); con.commit(); con.close()
+    if assigned_driver: send_push(assigned_driver, {'type':'new_ride','ride_id':ride_id,'title':'Nueva solicitud · Taxi Ya','body':f'Recogida: {data.origin}'})
     return {'ride_id':ride_id,'status':'requested','eta_minutes':eta,'estimated_price':price,'fare_reference':fare_name,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
 
 @app.post('/api/rides/{ride_id}/accept')
@@ -345,6 +379,7 @@ def timeout_ride(ride_id: str, data: RideTimeout):
     dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id) if attempts < 4 else None
     next_driver=dispatch['driver_id'] if dispatch else None
     con.execute('UPDATE rides SET driver_id=?,dispatch_attempts=? WHERE id=? AND status="requested"',(next_driver,attempts,ride_id)); con.commit(); con.close()
+    if next_driver: send_push(next_driver, {'type':'new_ride','ride_id':ride_id,'title':'Nueva solicitud · Taxi Ya','body':'Hay una solicitud disponible para ti'})
     exhausted=dispatch is None and attempts >= 4
     return {'ride_id':ride_id,'status':'requested','previous_driver_id':data.driver_id,'next_driver_id':next_driver,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
 
