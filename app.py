@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS drivers (id TEXT PRIMARY KEY, name TEXT NOT NULL, pho
 CREATE TABLE IF NOT EXISTS stops (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT, latitude REAL, longitude REAL, radius_m REAL NOT NULL DEFAULT 50, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS queue_entries (id TEXT PRIMARY KEY, stop_id TEXT NOT NULL, driver_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', joined_at TEXT NOT NULL, left_at TEXT, UNIQUE(stop_id, driver_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS stop_presence (driver_id TEXT NOT NULL, stop_id TEXT NOT NULL, entered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, inside INTEGER NOT NULL DEFAULT 1, outside_since TEXT, PRIMARY KEY(driver_id, stop_id), FOREIGN KEY(stop_id) REFERENCES stops(id), FOREIGN KEY(driver_id) REFERENCES drivers(id));
-CREATE TABLE IF NOT EXISTS rides (id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL, origin TEXT NOT NULL, destination TEXT NOT NULL, origin_lat REAL, origin_lng REAL, destination_lat REAL, destination_lng REAL, driver_id TEXT, status TEXT NOT NULL DEFAULT 'requested', eta_minutes INTEGER, estimated_price REAL, created_at TEXT NOT NULL, accepted_at TEXT, FOREIGN KEY(driver_id) REFERENCES drivers(id));
+CREATE TABLE IF NOT EXISTS rides (id TEXT PRIMARY KEY, customer_name TEXT NOT NULL, customer_phone TEXT NOT NULL, origin TEXT NOT NULL, destination TEXT NOT NULL, origin_lat REAL, origin_lng REAL, destination_lat REAL, destination_lng REAL, driver_id TEXT, status TEXT NOT NULL DEFAULT 'requested', eta_minutes INTEGER, estimated_price REAL, created_at TEXT NOT NULL, accepted_at TEXT, dispatch_attempts INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(driver_id) REFERENCES drivers(id));
 CREATE TABLE IF NOT EXISTS locations (entity_id TEXT NOT NULL, role TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, ride_id TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(entity_id, role));
 '''
 
@@ -53,6 +53,8 @@ def init_db():
         if name not in driver_cols: con.execute(f'ALTER TABLE drivers ADD COLUMN {name} {definition}')
     presence_cols={r['name'] for r in con.execute('PRAGMA table_info(stop_presence)').fetchall()}
     if 'outside_since' not in presence_cols: con.execute('ALTER TABLE stop_presence ADD COLUMN outside_since TEXT')
+    ride_cols={r['name'] for r in con.execute('PRAGMA table_info(rides)').fetchall()}
+    if 'dispatch_attempts' not in ride_cols: con.execute('ALTER TABLE rides ADD COLUMN dispatch_attempts INTEGER NOT NULL DEFAULT 0')
     con.execute('UPDATE stops SET radius_m=50 WHERE radius_m IS NULL')
     # Keep the four operational stops available individually. If a stop was
     # accidentally missing, restore only that stop without touching existing data.
@@ -245,7 +247,7 @@ def delete_stop(stop_id: str):
     return {'ok':True}
 
 def queue_rows(con, stop_id=None):
-    sql='''SELECT q.id,q.stop_id,q.driver_id,q.joined_at,d.name,d.plate FROM queue_entries q JOIN drivers d ON d.id=q.driver_id WHERE q.status="waiting"'''
+    sql='''SELECT q.id,q.stop_id,q.driver_id,q.joined_at,d.name,d.license,d.plate FROM queue_entries q JOIN drivers d ON d.id=q.driver_id WHERE q.status="waiting"'''
     params=[]
     if stop_id: sql+=' AND q.stop_id=?'; params.append(stop_id)
     return con.execute(sql+' ORDER BY q.joined_at,q.id',params).fetchall()
@@ -309,8 +311,10 @@ def get_queue(stop_id: str):
 def request_ride(data: RideRequest):
     ride_id=str(uuid.uuid4()); con=db(); values=data.model_dump(); ride={'origin_lat':values['origin_lat'],'origin_lng':values['origin_lng'],'destination_lat':values['destination_lat'],'destination_lng':values['destination_lng']}; (eta,price),fare_name=estimate_from_central(con,ride); dispatch=driver_dispatch(con,data.origin_lat,data.origin_lng)
     assigned_driver=dispatch['driver_id'] if dispatch else None
-    con.execute('INSERT INTO rides VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(ride_id,data.customer_name,data.customer_phone,data.origin,data.destination,data.origin_lat,data.origin_lng,data.destination_lat,data.destination_lng,assigned_driver,'requested',eta,price,now(),None)); con.commit(); con.close()
-    return {'ride_id':ride_id,'status':'requested','eta_minutes':eta,'estimated_price':price,'fare_reference':fare_name,'dispatch':dispatch,'zone_km':SERVICE_ZONE_KM}
+    exhausted=dispatch is None
+    attempts=1 if assigned_driver else 4
+    con.execute('INSERT INTO rides (id,customer_name,customer_phone,origin,destination,origin_lat,origin_lng,destination_lat,destination_lng,driver_id,status,eta_minutes,estimated_price,created_at,accepted_at,dispatch_attempts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(ride_id,data.customer_name,data.customer_phone,data.origin,data.destination,data.origin_lat,data.origin_lng,data.destination_lat,data.destination_lng,assigned_driver,'requested',eta,price,now(),None,attempts)); con.commit(); con.close()
+    return {'ride_id':ride_id,'status':'requested','eta_minutes':eta,'estimated_price':price,'fare_reference':fare_name,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
 
 @app.post('/api/rides/{ride_id}/accept')
 def accept_ride(ride_id: str, data: RideAccept):
@@ -337,9 +341,12 @@ def timeout_ride(ride_id: str, data: RideTimeout):
     # El taxista que no responde pasa al final de la cola unificada.
     con.execute('UPDATE queue_entries SET joined_at=?,left_at=NULL WHERE driver_id=? AND status="waiting"',(current,data.driver_id))
     dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id)
+    attempts=int(ride['dispatch_attempts'] or 0)+1
+    dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id) if attempts < 4 else None
     next_driver=dispatch['driver_id'] if dispatch else None
-    con.execute('UPDATE rides SET driver_id=? WHERE id=? AND status="requested"',(next_driver,ride_id)); con.commit(); con.close()
-    return {'ride_id':ride_id,'status':'requested','previous_driver_id':data.driver_id,'next_driver_id':next_driver,'dispatch':dispatch,'zone_km':SERVICE_ZONE_KM}
+    con.execute('UPDATE rides SET driver_id=?,dispatch_attempts=? WHERE id=? AND status="requested"',(next_driver,attempts,ride_id)); con.commit(); con.close()
+    exhausted=dispatch is None and attempts >= 4
+    return {'ride_id':ride_id,'status':'requested','previous_driver_id':data.driver_id,'next_driver_id':next_driver,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
 
 @app.get('/api/rides/open')
 def open_rides(driver_id: Optional[str]=None):
