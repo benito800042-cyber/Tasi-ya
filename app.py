@@ -127,11 +127,15 @@ def estimate_from_central(con, ride):
 
 def driver_dispatch(con, origin_lat, origin_lng, exclude_driver_id=None):
     if origin_lat is None or origin_lng is None: return None
+    # La cola unificada manda siempre, sin importar en qué parada esté el taxi.
+    # La proximidad solo se usa como desempate/fallback cuando no hay nadie en cola.
     for q in queue_rows(con):
         if exclude_driver_id and q['driver_id']==exclude_driver_id: continue
+        driver=con.execute('SELECT status,available,busy FROM drivers WHERE id=?',(q['driver_id'],)).fetchone()
+        if not driver or driver['status']!='active' or not driver['available'] or driver['busy']: continue
         loc=con.execute('SELECT lat,lng FROM locations WHERE entity_id=? AND role="driver"',(q['driver_id'],)).fetchone()
-        if loc and (haversine(origin_lat,origin_lng,loc['lat'],loc['lng']) or 999) <= SERVICE_ZONE_KM:
-            return {'driver_id':q['driver_id'],'mode':'queue','distance_km':round(haversine(origin_lat,origin_lng,loc['lat'],loc['lng']),2)}
+        distance=haversine(origin_lat,origin_lng,loc['lat'],loc['lng']) if loc else None
+        return {'driver_id':q['driver_id'],'mode':'queue','distance_km':round(distance,2) if distance is not None else None}
     rows=con.execute('''SELECT l.entity_id,l.lat,l.lng FROM locations l JOIN drivers d ON d.id=l.entity_id
         WHERE l.role="driver" AND d.status="active" AND d.available=1 AND d.busy=0''').fetchall()
     candidates=[]
