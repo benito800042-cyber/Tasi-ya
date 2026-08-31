@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 import httpx
 import json
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -237,8 +238,18 @@ async def geocode(q: str):
 def register_driver(data: DriverRegister):
     con=db(); driver_id=str(uuid.uuid4())
     try:
-        con.execute('INSERT INTO drivers VALUES (?,?,?,?,?,?,?,?,?,?)',(driver_id,data.name,data.phone,data.license,data.plate,'pending',None,now(),0,0)); con.commit()
-    except sqlite3.IntegrityError: raise HTTPException(409,'El teléfono ya está registrado')
+        # Explicit columns keep registration compatible with older databases.
+        for attempt in range(4):
+            try:
+                con.execute('BEGIN IMMEDIATE')
+                con.execute('INSERT INTO drivers (id,name,phone,license,plate,status,device_id,created_at,available,busy) VALUES (?,?,?,?,?,?,?,?,?,?)',(driver_id,data.name.strip(),data.phone.strip(),data.license.strip(),data.plate.strip(),'pending',None,now(),0,0))
+                con.commit(); break
+            except sqlite3.OperationalError as exc:
+                con.rollback()
+                if 'locked' not in str(exc).lower() or attempt==3: raise HTTPException(503,'El servidor está ocupado. Espera unos segundos y vuelve a intentarlo.')
+                time.sleep(0.7*(attempt+1))
+    except sqlite3.IntegrityError:
+        con.rollback(); raise HTTPException(409,'El teléfono ya está registrado')
     finally: con.close()
     return {'driver_id':driver_id,'status':'pending','message':'Registro creado. Falta activación.'}
 
