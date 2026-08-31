@@ -360,7 +360,7 @@ def request_ride(data: RideRequest):
     ride_id=str(uuid.uuid4()); con=db(); values=data.model_dump(); ride={'origin_lat':values['origin_lat'],'origin_lng':values['origin_lng'],'destination_lat':values['destination_lat'],'destination_lng':values['destination_lng']}; (eta,price),fare_name=estimate_from_central(con,ride); dispatch=driver_dispatch(con,data.origin_lat,data.origin_lng)
     assigned_driver=dispatch['driver_id'] if dispatch else None
     exhausted=dispatch is None
-    attempts=1 if assigned_driver else 4
+    attempts=1
     con.execute('INSERT INTO rides (id,customer_name,customer_phone,origin,destination,origin_lat,origin_lng,destination_lat,destination_lng,driver_id,status,eta_minutes,estimated_price,created_at,accepted_at,dispatch_attempts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(ride_id,data.customer_name,data.customer_phone,data.origin,data.destination,data.origin_lat,data.origin_lng,data.destination_lat,data.destination_lng,assigned_driver,'requested',eta,price,now(),None,attempts)); con.commit(); con.close()
     if assigned_driver: send_push(assigned_driver, {'type':'new_ride','ride_id':ride_id,'title':'Nueva solicitud · Taxi Ya','body':f'Recogida: {data.origin}'})
     return {'ride_id':ride_id,'status':'requested','eta_minutes':eta,'estimated_price':price,'fare_reference':fare_name,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
@@ -391,11 +391,11 @@ def timeout_ride(ride_id: str, data: RideTimeout):
     con.execute('UPDATE queue_entries SET joined_at=?,left_at=NULL WHERE driver_id=? AND status="waiting"',(current,data.driver_id))
     dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id)
     attempts=int(ride['dispatch_attempts'] or 0)+1
-    dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id) if attempts < 4 else None
+    dispatch=driver_dispatch(con,ride['origin_lat'],ride['origin_lng'],exclude_driver_id=data.driver_id)
     next_driver=dispatch['driver_id'] if dispatch else None
     con.execute('UPDATE rides SET driver_id=?,dispatch_attempts=? WHERE id=? AND status="requested"',(next_driver,attempts,ride_id)); con.commit(); con.close()
     if next_driver: send_push(next_driver, {'type':'new_ride','ride_id':ride_id,'title':'Nueva solicitud · Taxi Ya','body':'Hay una solicitud disponible para ti'})
-    exhausted=dispatch is None and attempts >= 4
+    exhausted=dispatch is None
     return {'ride_id':ride_id,'status':'requested','previous_driver_id':data.driver_id,'next_driver_id':next_driver,'dispatch':dispatch,'dispatch_attempts':attempts,'exhausted':exhausted,'message':'En estos momentos todos los taxis están ocupados. Vuelve a intentarlo en unos minutos. Disculpa las molestias.' if exhausted else None,'zone_km':SERVICE_ZONE_KM}
 
 @app.get('/api/rides/open')
